@@ -1,0 +1,60 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function member(data) { return signedIn() && request.auth.uid in data.participants; }
+    function validChat(data, chatId) {
+      return data.keys().hasOnly(['participants','createdAt','updatedAt','lastMessage'])
+        && data.keys().hasAll(['participants','createdAt','updatedAt','lastMessage'])
+        && data.participants is list && data.participants.size() == 2
+        && data.participants[0] is string && data.participants[1] is string
+        && data.participants[0] < data.participants[1]
+        && chatId == data.participants[0] + '_' + data.participants[1]
+        && member(data)
+        && exists(/databases/$(database)/documents/users/$(data.participants[0]))
+        && exists(/databases/$(database)/documents/users/$(data.participants[1]))
+        && data.createdAt == request.time && data.updatedAt == request.time
+        && data.lastMessage == '';
+    }
+    match /users/{userId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && request.auth.uid == userId
+        && request.resource.data.keys().hasOnly(['displayName','createdAt'])
+        && request.resource.data.keys().hasAll(['displayName','createdAt'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40
+        && request.resource.data.createdAt == request.time;
+      allow update: if signedIn() && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName'])
+        && request.resource.data.displayName is string
+        && request.resource.data.displayName.size() > 0
+        && request.resource.data.displayName.size() <= 40;
+      allow delete: if false;
+    }
+    match /chats/{chatId} {
+      allow get, list: if member(resource.data);
+      allow create: if validChat(request.resource.data, chatId);
+      allow update: if member(resource.data)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage','updatedAt'])
+        && request.resource.data.lastMessage is string
+        && request.resource.data.lastMessage.size() <= 120
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if false;
+      match /messages/{messageId} {
+        function parent() { return get(/databases/$(database)/documents/chats/$(chatId)); }
+        allow get, list: if member(parent().data);
+        allow create: if member(parent().data)
+          && request.resource.data.keys().hasOnly(['senderId','text','createdAt'])
+          && request.resource.data.keys().hasAll(['senderId','text','createdAt'])
+          && request.resource.data.senderId == request.auth.uid
+          && request.resource.data.text is string
+          && request.resource.data.text.size() > 0
+          && request.resource.data.text.size() <= 2000
+          && request.resource.data.createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+  }
+}
